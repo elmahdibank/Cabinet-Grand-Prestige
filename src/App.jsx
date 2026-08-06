@@ -1421,11 +1421,21 @@ export default function App() {
   },[]);
 
   useEffect(()=>{
-    try {
-      const raw = localStorage.getItem('cdgp_v3');
-      if (raw) { setRequests(JSON.parse(raw)); }
-      else { setRequests(SAMPLE_DATA); localStorage.setItem('cdgp_v3',JSON.stringify(SAMPLE_DATA)); }
-    } catch(e) { setRequests(SAMPLE_DATA); }
+    async function load() {
+      try {
+        const res = await fetch('/api/requests');
+        if (!res.ok) throw new Error('Réponse API invalide');
+        const data = await res.json();
+        setRequests(data);
+      } catch(e) {
+        console.error('[Neon] Impossible de charger les demandes depuis la base — repli local :', e);
+        try {
+          const raw = localStorage.getItem('cdgp_v3');
+          setRequests(raw ? JSON.parse(raw) : SAMPLE_DATA);
+        } catch(e2) { setRequests(SAMPLE_DATA); }
+      }
+    }
+    load();
   },[]);
 
   const nav = p => {
@@ -1433,18 +1443,47 @@ export default function App() {
     try { window.scrollTo({top:0,behavior:'instant'}); } catch(e) { try { window.scrollTo(0,0); } catch(e2){} }
   };
 
-  const addRequest = fd => {
-    const req = {...fd, id:Date.now().toString(), status:'Nouveau', notes:'', created_at:new Date().toISOString()};
-    const up = [req,...requests];
-    setRequests(up);
-    try { localStorage.setItem('cdgp_v3',JSON.stringify(up)); } catch(e){}
-    sendRdvNotification(req); // notifie le docteur par email (silencieux si EmailJS non configuré)
+  const addRequest = async (fd) => {
+    try {
+      const res = await fetch('/api/requests', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(fd),
+      });
+      if (!res.ok) throw new Error('Réponse API invalide');
+      const req = await res.json();
+      setRequests(prev => [req, ...prev]);
+      sendRdvNotification(req); // notifie le docteur par email (silencieux si EmailJS non configuré)
+    } catch(e) {
+      console.error('[Neon] Échec de l\'enregistrement du RDV — repli local :', e);
+      const req = {...fd, id:Date.now().toString(), status:'Nouveau', notes:'', created_at:new Date().toISOString()};
+      setRequests(prev => {
+        const up = [req, ...prev];
+        try { localStorage.setItem('cdgp_v3', JSON.stringify(up)); } catch(e2){}
+        return up;
+      });
+      sendRdvNotification(req);
+    }
   };
 
-  const updateRequest = (id,upd) => {
-    const up = requests.map(r=>r.id===id?{...r,...upd}:r);
-    setRequests(up);
-    try { localStorage.setItem('cdgp_v3',JSON.stringify(up)); } catch(e){}
+  const updateRequest = async (id, upd) => {
+    // Mise à jour optimiste immédiate à l'écran, confirmée ensuite par la base
+    setRequests(prev => prev.map(r => r.id===id ? {...r, ...upd} : r));
+    try {
+      const res = await fetch(`/api/requests/${id}`, {
+        method: 'PATCH',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(upd),
+      });
+      if (!res.ok) throw new Error('Réponse API invalide');
+    } catch(e) {
+      console.error('[Neon] Échec de la mise à jour (statut/notes) — la valeur reste appliquée localement :', e);
+      setRequests(prev => {
+        const up = prev.map(r => r.id===id ? {...r, ...upd} : r);
+        try { localStorage.setItem('cdgp_v3', JSON.stringify(up)); } catch(e2){}
+        return up;
+      });
+    }
   };
 
   const props = {nav,requests,addRequest,updateRequest,adminAuth,setAdminAuth};
